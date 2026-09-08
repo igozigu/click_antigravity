@@ -12,3 +12,7 @@ __pycache__/
 .idea/
 Thumbs.db
 Desktop.ini
+
+# 배포용 실행 파일은 반드시 Git에 포함 (절대 제외 금지)
+!*.exe
+
