@@ -1,0 +1,14 @@
+# PyInstaller build cache
+build/
+*.spec
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# IDE & OS files
+.vscode/
+.idea/
+Thumbs.db
+Desktop.ini
