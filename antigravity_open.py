@@ -89,38 +89,91 @@ def installed_exe_path() -> pathlib.Path:
     return INSTALL_DIRNAME / INSTALL_EXE_NAME
 
 
+LOG_FILE = INSTALL_DIRNAME / "open.log"
+
+
+def log(msg: str) -> None:
+    try:
+        INSTALL_DIRNAME.mkdir(parents=True, exist_ok=True)
+        now = time.strftime("%Y-%m-%d %H:%M:%S")
+        with open(LOG_FILE, "a", encoding="utf-8") as f:
+            f.write(f"[{now}] {msg}\n")
+    except Exception:
+        pass
+
+
 # ── CDP 헬퍼 ──────────────────────────────────────────
-def ensure_app_running(app_path: pathlib.Path) -> None:
-    """Antigravity 2.0이 안 떠 있으면 기동하고 포트 파일 대기 (최대 15초)"""
-    if port_file().is_file():
-        return
-    subprocess.Popen([str(app_path)], close_fds=True)
-    for _ in range(30):
-        time.sleep(0.5)
-        if port_file().is_file():
-            return
+def check_app_alive() -> int | None:
+    """DevToolsActivePort를 읽고 실제 HTTP GET /json 응답이 오는지 확인하여 포트 반환"""
+    pf = port_file()
+    if not pf.is_file():
+        return None
+    try:
+        lines = [
+            ln.strip()
+            for ln in pf.read_text(encoding="utf-8", errors="ignore").splitlines()
+            if ln.strip()
+        ]
+        if not lines:
+            return None
+        port = int(lines[0])
+        url = f"http://127.0.0.1:{port}/json"
+        req = urllib.request.Request(url, headers={"User-Agent": "AntigravityOpen"})
+        with urllib.request.urlopen(req, timeout=0.5) as resp:
+            if resp.status == 200:
+                return port
+    except Exception:
+        pass
+    return None
 
 
-def get_debugger_url() -> str | None:
-    """DevToolsActivePort에서 포트를 읽고, /json 에서 page WS URL을 반환"""
-    for _ in range(20):
+def ensure_app_running(app_path: pathlib.Path) -> int | None:
+    """Antigravity 2.0이 실행 중이 아니면 기동하고, CDP 포트가 응답할 때까지 대기 (최대 30초)"""
+    alive_port = check_app_alive()
+    if alive_port is not None:
+        return alive_port
+
+    log("Antigravity 2.0 is not running. Launching...")
+    # 이전 세션의 죽은 DevToolsActivePort 파일이 남아있다면 정리
+    try:
         pf = port_file()
         if pf.is_file():
+            pf.unlink(missing_ok=True)
+    except Exception:
+        pass
+
+    subprocess.Popen([str(app_path)], close_fds=True)
+    for _ in range(60):
+        time.sleep(0.5)
+        alive_port = check_app_alive()
+        if alive_port is not None:
+            log(f"Antigravity 2.0 launched. CDP port: {alive_port}")
+            return alive_port
+
+    log("ensure_app_running timed out after 30s")
+    return None
+
+
+def get_debugger_url(port: int | None = None) -> str | None:
+    """CDP /json 에서 실제 로드된 Antigravity 웹 UI(type=page, url != about:blank)의 WebSocket URL 반환"""
+    for _ in range(40):
+        target_port = port if port is not None else check_app_alive()
+        if target_port is not None:
             try:
-                lines = [
-                    ln.strip()
-                    for ln in pf.read_text(encoding="utf-8", errors="ignore").splitlines()
-                    if ln.strip()
-                ]
-                if not lines:
-                    time.sleep(0.5)
-                    continue
-                port = int(lines[0])
-                url = f"http://127.0.0.1:{port}/json"
-                with urllib.request.urlopen(url, timeout=2) as resp:
+                url = f"http://127.0.0.1:{target_port}/json"
+                req = urllib.request.Request(url, headers={"User-Agent": "AntigravityOpen"})
+                with urllib.request.urlopen(req, timeout=1.0) as resp:
                     pages = json.loads(resp.read().decode("utf-8"))
                 for page in pages:
-                    if page.get("type") == "page" and page.get("webSocketDebuggerUrl"):
+                    p_url = page.get("url", "")
+                    # about:blank 나 빈 URL이 아닌 실제 Antigravity 웹 UI로 로드된 메인 창만 선택
+                    if (
+                        page.get("type") == "page"
+                        and page.get("webSocketDebuggerUrl")
+                        and p_url
+                        and not p_url.startswith("about:")
+                        and not p_url.startswith("chrome-")
+                    ):
                         return page["webSocketDebuggerUrl"]
             except Exception:
                 pass
@@ -131,8 +184,8 @@ def get_debugger_url() -> str | None:
 # ── React/CDP JS ──────────────────────────────────────
 JS_TEMPLATE = r"""
 window.__openInAntigravityPromise = (async (folderUri, folderName) => {
-    // 앱이 완전히 로드될 때까지 최대 3회 재시도
-    for (let attempt = 0; attempt < 3; attempt++) {
+    // 앱(React & projectManagementFeature)이 완전히 로드될 때까지 최대 30회 재시도 (15초)
+    for (let attempt = 0; attempt < 30; attempt++) {
         try {
             const root = document.querySelector('#root');
             if (!root) {
@@ -164,10 +217,24 @@ window.__openInAntigravityPromise = (async (folderUri, folderName) => {
             }
             walk(fiber);
 
-            if (!pm) {
+            if (!pm || !pm.hasInitialized) {
                 await new Promise(r => setTimeout(r, 500));
                 continue;
             }
+
+            if (!window.__TSR_ROUTER__) {
+                await new Promise(r => setTimeout(r, 500));
+                continue;
+            }
+
+            function norm(u) {
+                if (!u) return '';
+                try {
+                    u = decodeURIComponent(String(u));
+                } catch (e) {}
+                return u.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+            }
+            const targetNorm = norm(folderUri);
 
             // 기존 프로젝트 중복 확인
             const richState = pm.richProjectsProvider && pm.richProjectsProvider.getState
@@ -179,7 +246,7 @@ window.__openInAntigravityPromise = (async (folderUri, folderName) => {
                     const res = (item.project && item.project.projectResources && item.project.projectResources.resources) || [];
                     for (const r of res) {
                         const uri = (r.type && r.type.value && r.type.value.folderUri) || (r.type && r.type.value);
-                        if (uri === folderUri || decodeURIComponent(String(uri)) === folderUri) {
+                        if (norm(uri) === targetNorm) {
                             existingId = item.project.id;
                             break;
                         }
@@ -196,7 +263,7 @@ window.__openInAntigravityPromise = (async (folderUri, folderName) => {
                     resolved = await pm.resolveFolder(folderUri);
                 } catch (e) {}
 
-                const isGit = resolved && (resolved.type === 1 || resolved.vcsType === 1);
+                const isGit = resolved && (resolved.type === 1 || resolved.vcsType === 1 || resolved.vcsType === 4);
                 const resourceObj = isGit ? {
                     case: "gitFolder",
                     value: { folderUri: folderUri, defaultBranch: "" }
@@ -225,13 +292,50 @@ window.__openInAntigravityPromise = (async (folderUri, folderName) => {
                 targetId = newId;
             }
 
-            // TanStack Router로 화면 이동
-            if (window.__TSR_ROUTER__) {
+            // 해당 프로젝트 활성화 (새 대화 창 열기)
+            let activated = false;
+            for (let retry = 0; retry < 25; retry++) {
+                try {
+                    const stack = [fiber];
+                    let renderer = null;
+                    let directNode = null;
+                    while (stack.length > 0) {
+                        const node = stack.pop();
+                        if (!node) continue;
+                        if (node.memoizedProps && node.memoizedProps.projectId === targetId && typeof node.memoizedProps.onAddClick === 'function') {
+                            directNode = node;
+                            break;
+                        }
+                        if (node.memoizedProps && typeof node.memoizedProps.customHeaderRenderer === 'function') {
+                            renderer = node.memoizedProps.customHeaderRenderer;
+                        }
+                        if (node.sibling) stack.push(node.sibling);
+                        if (node.child) stack.push(node.child);
+                    }
+
+                    if (directNode) {
+                        directNode.memoizedProps.onAddClick({ stopPropagation: () => {} });
+                        activated = true;
+                        break;
+                    } else if (renderer) {
+                        const el = renderer({ id: 'header-' + targetId });
+                        if (el && el.props && typeof el.props.onAddClick === 'function') {
+                            el.props.onAddClick({ stopPropagation: () => {} });
+                            activated = true;
+                            break;
+                        }
+                    }
+                } catch (e) {}
+                await new Promise(r => setTimeout(r, 200));
+            }
+
+            // Fallback: activation 실패 시에만 TanStack Router로 화면 이동
+            if (!activated && window.__TSR_ROUTER__) {
                 window.__TSR_ROUTER__.navigate({ to: '/', search: { section: targetId } });
             }
-            return JSON.stringify({ success: true, targetId, wasExisting: !!existingId });
+            return JSON.stringify({ success: true, targetId, wasExisting: !!existingId, activated });
         } catch (err) {
-            if (attempt < 2) {
+            if (attempt < 29) {
                 await new Promise(r => setTimeout(r, 500));
                 continue;
             }
@@ -257,7 +361,7 @@ async def setup_project_in_antigravity(ws_url: str, target_folder: str) -> dict:
         )
     )
 
-    async with websockets.connect(ws_url) as ws:
+    async with websockets.connect(ws_url, ping_interval=None, close_timeout=5) as ws:
         # 1) 창을 앞으로
         await ws.send(json.dumps({"id": 1, "method": "Page.bringToFront"}))
         await ws.recv()
@@ -267,31 +371,78 @@ async def setup_project_in_antigravity(ws_url: str, target_folder: str) -> dict:
                 {
                     "id": 2,
                     "method": "Runtime.evaluate",
-                    "params": {"expression": js_code, "awaitPromise": True},
+                    "params": {"expression": js_code, "awaitPromise": True, "returnByValue": True},
                 }
             )
         )
-        return json.loads(await ws.recv())
+        resp_raw = await ws.recv()
+        resp = json.loads(resp_raw)
+
+        if "error" in resp:
+            raise RuntimeError(f"CDP evaluate error: {resp['error']}")
+
+        val = resp.get("result", {}).get("result", {}).get("value")
+        if isinstance(val, str):
+            try:
+                res_obj = json.loads(val)
+                if "error" in res_obj:
+                    raise RuntimeError(f"JS evaluate error: {res_obj['error']}")
+                return res_obj
+            except json.JSONDecodeError:
+                return {"value": val}
+        return resp
 
 
 # ── 우클릭 핸들러 ─────────────────────────────────────
 def open_folder(target_folder: str) -> None:
     """무음. 탐색기 우클릭 시 호출되며, 실패해도 조용히 종료."""
-    app_path = find_antigravity_exe()
-    if app_path is None or not os.path.exists(target_folder):
+    raw_folder = target_folder.strip().strip('"')
+    if (len(raw_folder) == 2 and raw_folder[1] == ":") or (
+        len(raw_folder) == 3 and raw_folder[1:] == ":\\"
+    ):
+        clean_folder = raw_folder[:2] + "\\"
+    else:
+        clean_folder = raw_folder.rstrip("\\/")
+
+    if not os.path.exists(clean_folder):
+        log(f"Target folder does not exist: {clean_folder} (raw: {target_folder})")
         return
-    ensure_app_running(app_path)
-    ws_url = get_debugger_url()
-    if ws_url:
+
+    app_path = find_antigravity_exe()
+    if app_path is None:
+        log("Antigravity.exe not found")
+        return
+
+    log(f"open_folder called for: {clean_folder}")
+
+    # 1) 앱 실행 및 CDP 포트 활성화 대기
+    alive_port = ensure_app_running(app_path)
+    if alive_port is None:
+        log("ensure_app_running failed")
+        return
+
+    # 2) CDP WebSocket URL 획득 및 프로젝트 설정 (콜드 스타트 시 최대 20회 재시도)
+    success = False
+    for attempt in range(1, 21):
+        ws_url = get_debugger_url(alive_port)
+        if not ws_url:
+            time.sleep(1)
+            continue
         try:
-            asyncio.run(setup_project_in_antigravity(ws_url, target_folder))
-        except Exception:
-            pass
-    # Antigravity.exe를 한 번 더 Popen → second-instance 로 창 활성화
+            res = asyncio.run(setup_project_in_antigravity(ws_url, clean_folder))
+            log(f"Attempt {attempt} success: {res}")
+            if isinstance(res, dict) and (res.get("success") or res.get("targetId")):
+                success = True
+                break
+        except Exception as e:
+            log(f"Attempt {attempt} failed: {e}")
+            time.sleep(1)
+
+    # 3) Antigravity.exe를 한 번 더 Popen → second-instance 로 창 활성화
     try:
         subprocess.Popen([str(app_path)], close_fds=True)
-    except Exception:
-        pass
+    except Exception as e:
+        log(f"Second instance Popen error: {e}")
 
 
 # ── 레지스트리 ────────────────────────────────────────
@@ -390,9 +541,11 @@ def status() -> None:
     app = find_antigravity_exe()
     pf = port_file()
     dest = installed_exe_path()
+    alive_port = check_app_alive()
     lines = [
         f"Antigravity.exe: {app if app else '없음'}",
         f"DevToolsActivePort: {'있음' if pf.is_file() else '없음'} ({pf})",
+        f"앱 실행 상태: {'실행 중 (CDP 포트: ' + str(alive_port) + ')' if alive_port else '미실행 (응답 없음)'}",
         f"설치 EXE: {'있음' if dest.is_file() else '없음'} ({dest})",
         f"frozen: {is_frozen()}",
     ]
