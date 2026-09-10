@@ -19,7 +19,7 @@ INSTALL_DIRNAME = pathlib.Path.home() / ".gemini" / "antigravity"
 INSTALL_EXE_NAME = "AntigravityOpen.exe"
 MENU_TEXT = "Antigravity 2.0으로 열기"
 SHELL_KEY = "Antigravity2"
-LEGACY_KEY = "AntigravityIDE"
+
 
 REG_TARGETS = [
     r"Software\Classes\Directory\shell",
@@ -321,11 +321,6 @@ def register_context_menu(command_exe: pathlib.Path, app_path: pathlib.Path) -> 
             winreg.SetValueEx(k, "", 0, winreg.REG_SZ, cmd_val)
 
 
-def cleanup_legacy() -> None:
-    """한글 깨진 AntigravityIDE 레거시 키 삭제"""
-    for parent in REG_TARGETS:
-        delete_reg_tree(winreg.HKEY_CURRENT_USER, parent + "\\" + LEGACY_KEY)
-
 
 # ── 설치 / 제거 / 상태 ───────────────────────────────
 def install() -> None:
@@ -356,7 +351,6 @@ def install() -> None:
         if src.resolve() != dest.resolve():
             shutil.copy2(src, dest)
         command_exe = dest
-        cleanup_legacy()
         register_context_menu(command_exe, app_path)
         message_box(
             "설치가 완료되었습니다.\n\n"
@@ -372,7 +366,6 @@ def install() -> None:
         shutil.copy2(src, script_dest)
         cmd_override = f'"{runner}" "{script_dest}" "%V"'
         icon_val = f'"{app_path}",0'
-        cleanup_legacy()
         for parent in REG_TARGETS:
             subkey = parent + "\\" + SHELL_KEY
             with winreg.CreateKey(winreg.HKEY_CURRENT_USER, subkey) as k:
@@ -390,7 +383,6 @@ def install() -> None:
 def uninstall() -> None:
     for parent in REG_TARGETS:
         delete_reg_tree(winreg.HKEY_CURRENT_USER, parent + "\\" + SHELL_KEY)
-        delete_reg_tree(winreg.HKEY_CURRENT_USER, parent + "\\" + LEGACY_KEY)
     message_box("컨텍스트 메뉴를 제거했습니다.")
 
 

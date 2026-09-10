@@ -47,10 +47,10 @@
 - `python.exe`로 연결하면 우클릭마다 검은 CMD가 뜹니다.
 - 개발 단계에서는 `pythonw.exe`를 쓰고, 배포 단계에서는 `--noconsole` EXE를 씁니다.
 
-**한글 메뉴/레거시 키 충돌**
+**Antigravity IDE와의 공존**
 
-- 예전에 `AntigravityIDE` 키를 등록하다 인코딩이 깨지면 메뉴가 두 개 생기거나 깨진 문자로 남습니다.
-- 설치 시 레거시 키를 삭제해야 합니다.
+- `Antigravity IDE`(`Antigravity IDE.exe`)는 VS Code 기반의 독립된 별도 제품입니다.
+- `Antigravity 2.0`(`Antigravity.exe`) 우클릭 메뉴(`Antigravity2`)와 `Antigravity IDE` 우클릭 메뉴(`AntigravityIDE`)는 서로 다른 고유 키를 사용하여 공존해야 하며, 기존 `AntigravityIDE` 키를 임의로 삭제하지 않습니다.
 
 ### 2.2 성공의 핵심 원리
 
@@ -209,7 +209,7 @@ Windows 탐색기에서 임의의 폴더, 폴더 내부 빈 배경, 드라이브
 - 기본값: Antigravity 2.0으로 열기
 - Icon: "<Antigravity.exe 경로>",0
 - command: "<안정경로\AntigravityOpen.exe>" "%V"
-- 기존 AntigravityIDE 키(Directory/Background/Drive)는 트리 삭제.
+- 기존 AntigravityIDE 키(VS Code 기반 Antigravity IDE)는 삭제하지 않고 보존.
 
 [경로]
 - LOCALAPPDATA, APPDATA, Path.home(), sys.executable, getattr(sys, 'frozen', False)만 사용.
@@ -245,7 +245,7 @@ Windows 탐색기에서 임의의 폴더나 폴더 내부 빈 배경을 마우�
    - HKCU\Software\Classes\Directory\Background\shell\Antigravity2 (빈 배경 우클릭)
    - HKCU\Software\Classes\Drive\shell\Antigravity2 (드라이브 우클릭)
    - 아이콘: Antigravity.exe,0
-   - 기존에 한글 인코딩이 깨져 등록된 AntigravityIDE 레지스트리 키가 있다면 깔끔하게 정리할 것.
+   - 기존 Antigravity IDE 레지스트리 키(AntigravityIDE)는 별개 앱이므로 삭제하지 않고 보존할 것.
 ```
 
 4.1이 **이식/배포용**, 4.2가 **현재 PC 즉시 설정용**입니다. 다른 PC에 들고 다닐 EXE를 만들려면 4.1을 사용하십시오.
@@ -279,7 +279,6 @@ INSTALL_DIRNAME = pathlib.Path.home() / ".gemini" / "antigravity"
 INSTALL_EXE_NAME = "AntigravityOpen.exe"
 MENU_TEXT = "Antigravity 2.0으로 열기"
 SHELL_KEY = "Antigravity2"
-LEGACY_KEY = "AntigravityIDE"
 
 REG_TARGETS = [
     r"Software\Classes\Directory\shell",
@@ -525,11 +524,6 @@ def register_context_menu(command_exe: pathlib.Path, app_path: pathlib.Path) -> 
             winreg.SetValueEx(k, "", 0, winreg.REG_SZ, cmd_val)
 
 
-def cleanup_legacy() -> None:
-    for parent in REG_TARGETS:
-        delete_reg_tree(winreg.HKEY_CURRENT_USER, parent + "\\" + LEGACY_KEY)
-
-
 def install() -> None:
     app_path = find_antigravity_exe()
     if app_path is None:
@@ -558,7 +552,6 @@ def install() -> None:
         command_exe = None
         cmd_override = f'"{runner}" "{script_dest}" "%V"'
         icon_val = f'"{app_path}",0'
-        cleanup_legacy()
         for parent in REG_TARGETS:
             subkey = parent + "\\" + SHELL_KEY
             with winreg.CreateKey(winreg.HKEY_CURRENT_USER, subkey) as k:
@@ -573,7 +566,6 @@ def install() -> None:
         )
         return
 
-    cleanup_legacy()
     register_context_menu(command_exe, app_path)
     message_box(
         "설치가 완료되었습니다.\n\n"
@@ -585,7 +577,6 @@ def install() -> None:
 def uninstall() -> None:
     for parent in REG_TARGETS:
         delete_reg_tree(winreg.HKEY_CURRENT_USER, parent + "\\" + SHELL_KEY)
-        delete_reg_tree(winreg.HKEY_CURRENT_USER, parent + "\\" + LEGACY_KEY)
     message_box("컨텍스트 메뉴를 제거했습니다.")
 
 
@@ -760,7 +751,7 @@ python antigravity_open.py --install
 5. **선택/포커스**: 방금 등록한 프로젝트가 선택된 상태로 열린다. 이미 있던 프로젝트면 새로 만들지 않고 그 항목으로 이동한다.
 6. **Git 폴더**: `.git`이 있는 폴더는 gitFolder로, 없는 폴더는 일반 folderUri로 들어간다.
 7. **경로 독립성**: 설치에 사용한 EXE를 다른 드라이브로 옮겨도, 이미 설치된 메뉴는 `%USERPROFILE%\.gemini\antigravity\AntigravityOpen.exe`를 가리키므로 계속 동작한다.
-8. **레거시 정리**: 깨진 `AntigravityIDE` 메뉴가 남아 있지 않다.
+8. **기존 메뉴 보존**: 기존 Antigravity IDE 메뉴(`AntigravityIDE`)가 삭제되지 않고 Antigravity 2.0 메뉴와 함께 공존한다.
 
 레지스트리 확인 (PowerShell):
 
@@ -781,7 +772,7 @@ Get-ItemProperty HKCU:\Software\Classes\Directory\shell\Antigravity2\command
 | 작업표시줄만 깜빡임 | CDP 없이 exe만 실행 | DevToolsActivePort 존재 확인, websockets 포함 여부 확인 |
 | 창은 뜨는데 프로젝트가 안 생김 | Fiber/pm 탐색 실패, 앱 로딩 전 evaluate | 기동 대기 후 evaluate 재시도. Antigravity 2.0 UI 변경 시 JS 셀렉터 점검 |
 | 다른 PC에서 실패 | 경로 하드코딩 | `C:\Users\...` 문자열이 소스에 없는지 검색 |
-| 메뉴가 두 개 | 레거시 `AntigravityIDE` 잔존 | `--uninstall` 후 `--install`, 또는 레거시 키 트리 삭제 |
+| 기존 IDE 메뉴 공존 | Antigravity IDE 함께 설치됨 | 정상 동작. 두 제품이 각각 독립된 메뉴로 표시됩니다. |
 | `websockets` 오류 | hiddenimport 누락 | PyInstaller에 `--hidden-import websockets` |
 | 설치 MessageBox에 앱 없음 | 2.0 미설치 또는 경로 변경 | 공식 앱 설치 후 `--status` |
 
@@ -800,7 +791,7 @@ Get-ItemProperty HKCU:\Software\Classes\Directory\shell\Antigravity2\command
 - [ ] Git/일반 폴더 분기가 있다.
 - [ ] 기존 프로젝트 중복 생성을 피한다.
 - [ ] HKCU `Directory` / `Directory\Background` / `Drive` 세 곳 모두 등록한다.
-- [ ] `AntigravityIDE` 레거시 키를 삭제한다.
+- [ ] 기존 `AntigravityIDE` 레지스트리 키를 삭제하지 않고 보존한다.
 - [ ] 폴더 최상위 EXE 더블클릭 = 즉시 설치(MessageBox).
 - [ ] 우클릭 실행 = 콘솔 없음, MessageBox 없음.
 - [ ] `dist\AntigravityOpen.exe`가 실제로 빌드된다.
