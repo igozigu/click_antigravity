@@ -20,6 +20,9 @@ INSTALL_EXE_NAME = "AntigravityOpen.exe"
 MENU_TEXT = "Antigravity 2.0으로 열기"
 SHELL_KEY = "Antigravity2"
 
+IDE_MENU_TEXT = "Antigravity IDE(으)로 열기"
+IDE_SHELL_KEY = "AntigravityIDE"
+
 
 REG_TARGETS = [
     r"Software\Classes\Directory\shell",
@@ -64,6 +67,59 @@ def find_antigravity_exe() -> pathlib.Path | None:
     for path in candidates:
         if path.is_file():
             return path
+    return None
+
+
+def find_antigravity_ide_exe() -> pathlib.Path | None:
+    """Antigravity IDE (VS Code 기반) 실행 파일을 동적으로 탐색"""
+    candidates = [
+        pathlib.Path(r"C:\Antigravity IDE\Antigravity IDE.exe"),
+        local_appdata() / "Programs" / "Antigravity IDE" / "_" / "Antigravity IDE.exe",
+        local_appdata() / "Programs" / "Antigravity IDE" / "Antigravity IDE.exe",
+        pathlib.Path(os.environ.get("PROGRAMFILES", r"C:\Program Files"))
+        / "Antigravity IDE"
+        / "Antigravity IDE.exe",
+        pathlib.Path(os.environ.get("PROGRAMFILES(X86)", r"C:\Program Files (x86)"))
+        / "Antigravity IDE"
+        / "Antigravity IDE.exe",
+    ]
+    for path in candidates:
+        if path.is_file():
+            return path
+
+    uninstall_bases = [
+        (winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Uninstall"),
+        (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall"),
+    ]
+    for root, base in uninstall_bases:
+        try:
+            with winreg.OpenKey(root, base) as parent:
+                sub_count = winreg.QueryInfoKey(parent)[0]
+                for i in range(sub_count):
+                    try:
+                        sub = winreg.EnumKey(parent, i)
+                        with winreg.OpenKey(parent, sub) as key:
+                            disp, _ = winreg.QueryValueEx(key, "DisplayName")
+                            if "Antigravity IDE" in str(disp):
+                                try:
+                                    loc, _ = winreg.QueryValueEx(key, "InstallLocation")
+                                    loc_p = pathlib.Path(str(loc).strip().strip('"')) / "Antigravity IDE.exe"
+                                    if loc_p.is_file():
+                                        return loc_p
+                                except OSError:
+                                    pass
+                                try:
+                                    icon, _ = winreg.QueryValueEx(key, "DisplayIcon")
+                                    icon_str = str(icon).strip().split(",")[0].strip('"')
+                                    icon_p = pathlib.Path(icon_str)
+                                    if icon_p.is_file():
+                                        return icon_p
+                                except OSError:
+                                    pass
+                    except OSError:
+                        continue
+        except OSError:
+            continue
     return None
 
 
@@ -472,6 +528,41 @@ def register_context_menu(command_exe: pathlib.Path, app_path: pathlib.Path) -> 
             winreg.SetValueEx(k, "", 0, winreg.REG_SZ, cmd_val)
 
 
+def ensure_ide_context_menu() -> pathlib.Path | None:
+    """Antigravity IDE가 시스템에 설치되어 있다면, 우클릭 메뉴를 보존/등록하여 공존을 보장"""
+    ide_path = find_antigravity_ide_exe()
+    if ide_path is None:
+        return None
+
+    icon_val = f'"{ide_path}",0'
+    folder_cmd = f'"{ide_path}" "%V"'
+    file_cmd = f'"{ide_path}" "%1"'
+
+    # 1) 폴더 관련 컨텍스트 메뉴 (Directory, Directory\Background, Drive)
+    for parent in REG_TARGETS:
+        subkey = parent + "\\" + IDE_SHELL_KEY
+        try:
+            with winreg.CreateKey(winreg.HKEY_CURRENT_USER, subkey) as k:
+                winreg.SetValueEx(k, "", 0, winreg.REG_SZ, IDE_MENU_TEXT)
+                winreg.SetValueEx(k, "Icon", 0, winreg.REG_SZ, icon_val)
+            with winreg.CreateKey(winreg.HKEY_CURRENT_USER, subkey + r"\command") as k:
+                winreg.SetValueEx(k, "", 0, winreg.REG_SZ, folder_cmd)
+        except OSError as e:
+            log(f"Failed to ensure IDE menu in {parent}: {e}")
+
+    # 2) 파일 관련 컨텍스트 메뉴 (*)
+    try:
+        file_subkey = r"Software\Classes\*\shell" + "\\" + IDE_SHELL_KEY
+        with winreg.CreateKey(winreg.HKEY_CURRENT_USER, file_subkey) as k:
+            winreg.SetValueEx(k, "", 0, winreg.REG_SZ, IDE_MENU_TEXT)
+            winreg.SetValueEx(k, "Icon", 0, winreg.REG_SZ, icon_val)
+        with winreg.CreateKey(winreg.HKEY_CURRENT_USER, file_subkey + r"\command") as k:
+            winreg.SetValueEx(k, "", 0, winreg.REG_SZ, file_cmd)
+    except OSError as e:
+        log(f"Failed to ensure IDE menu for files: {e}")
+
+    return ide_path
+
 
 # ── 설치 / 제거 / 상태 ───────────────────────────────
 def install() -> None:
@@ -497,17 +588,16 @@ def install() -> None:
     src = current_executable()
     dest = installed_exe_path()
 
+    # 1) 기존 Antigravity IDE 메뉴가 보존/복원되도록 보장 (IDE가 설치된 경우)
+    ide_path = ensure_ide_context_menu()
+
+    # 2) Antigravity 2.0 우클릭 메뉴 추가 등록
     if is_frozen():
         # ── 배포(EXE) 모드 ──
         if src.resolve() != dest.resolve():
             shutil.copy2(src, dest)
         command_exe = dest
         register_context_menu(command_exe, app_path)
-        message_box(
-            "설치가 완료되었습니다.\n\n"
-            "파일 탐색기에서 폴더를 우클릭한 뒤\n"
-            "'Antigravity 2.0으로 열기'를 선택하십시오."
-        )
     else:
         # ── 개발(Python) 모드 ──
         python_dir = pathlib.Path(sys.executable).parent
@@ -524,26 +614,37 @@ def install() -> None:
                 winreg.SetValueEx(k, "Icon", 0, winreg.REG_SZ, icon_val)
             with winreg.CreateKey(winreg.HKEY_CURRENT_USER, subkey + r"\command") as k:
                 winreg.SetValueEx(k, "", 0, winreg.REG_SZ, cmd_override)
-        message_box(
-            "개발 모드로 컨텍스트 메뉴를 등록했습니다.\n"
-            f"브리지: {script_dest}\n"
-            "배포용은 build_exe.ps1 로 EXE를 만드십시오."
-        )
+
+    msg = (
+        "설치가 완료되었습니다.\n\n"
+        "탐색기 우클릭 시 다음 메뉴가 표시됩니다:\n"
+        "1. Antigravity 2.0으로 열기\n"
+    )
+    if ide_path:
+        msg += f"2. Antigravity IDE(으)로 열기\n\n기존 IDE 메뉴는 그대로 보존된 상태로 2.0 메뉴가 추가되었습니다."
+    else:
+        msg += "\n(Antigravity IDE 미설치 감지 - 2.0 메뉴 등록 완료)"
+    message_box(msg)
 
 
 def uninstall() -> None:
     for parent in REG_TARGETS:
         delete_reg_tree(winreg.HKEY_CURRENT_USER, parent + "\\" + SHELL_KEY)
-    message_box("컨텍스트 메뉴를 제거했습니다.")
+    message_box(
+        "Antigravity 2.0 컨텍스트 메뉴를 제거했습니다.\n"
+        "(기존 Antigravity IDE 메뉴는 그대로 유지됩니다.)"
+    )
 
 
 def status() -> None:
     app = find_antigravity_exe()
+    ide = find_antigravity_ide_exe()
     pf = port_file()
     dest = installed_exe_path()
     alive_port = check_app_alive()
     lines = [
-        f"Antigravity.exe: {app if app else '없음'}",
+        f"Antigravity 2.0: {app if app else '없음'}",
+        f"Antigravity IDE: {ide if ide else '없음'}",
         f"DevToolsActivePort: {'있음' if pf.is_file() else '없음'} ({pf})",
         f"앱 실행 상태: {'실행 중 (CDP 포트: ' + str(alive_port) + ')' if alive_port else '미실행 (응답 없음)'}",
         f"설치 EXE: {'있음' if dest.is_file() else '없음'} ({dest})",

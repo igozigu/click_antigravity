@@ -47,10 +47,11 @@
 - `python.exe`로 연결하면 우클릭마다 검은 CMD가 뜹니다.
 - 개발 단계에서는 `pythonw.exe`를 쓰고, 배포 단계에서는 `--noconsole` EXE를 씁니다.
 
-**Antigravity IDE와의 공존**
+**Antigravity IDE와의 공존 및 자동 복원 보장**
 
 - `Antigravity IDE`(`Antigravity IDE.exe`)는 VS Code 기반의 독립된 별도 제품입니다.
-- `Antigravity 2.0`(`Antigravity.exe`) 우클릭 메뉴(`Antigravity2`)와 `Antigravity IDE` 우클릭 메뉴(`AntigravityIDE`)는 서로 다른 고유 키를 사용하여 공존해야 하며, 기존 `AntigravityIDE` 키를 임의로 삭제하지 않습니다.
+- `AntigravityOpen.exe` 설치 시 기존 `AntigravityIDE` 우클릭 메뉴가 삭제되지 않도록 보호할 뿐만 아니라, 과거 버전 등으로 인해 삭제/누락된 경우 시스템에서 `Antigravity IDE.exe`를 탐색해 **기존 IDE 메뉴(`AntigravityIDE`)를 자동으로 복원·보장**합니다.
+- 결과적으로 **기존 Antigravity IDE 메뉴는 온전히 유지된 상태에서 추가적으로 Antigravity 2.0 메뉴(`Antigravity2`)가 생성**되어 두 제품이 완벽하게 공존합니다.
 
 ### 2.2 성공의 핵심 원리
 
@@ -751,7 +752,7 @@ python antigravity_open.py --install
 5. **선택/포커스**: 방금 등록한 프로젝트가 선택된 상태로 열린다. 이미 있던 프로젝트면 새로 만들지 않고 그 항목으로 이동한다.
 6. **Git 폴더**: `.git`이 있는 폴더는 gitFolder로, 없는 폴더는 일반 folderUri로 들어간다.
 7. **경로 독립성**: 설치에 사용한 EXE를 다른 드라이브로 옮겨도, 이미 설치된 메뉴는 `%USERPROFILE%\.gemini\antigravity\AntigravityOpen.exe`를 가리키므로 계속 동작한다.
-8. **기존 메뉴 보존**: 기존 Antigravity IDE 메뉴(`AntigravityIDE`)가 삭제되지 않고 Antigravity 2.0 메뉴와 함께 공존한다.
+8. **기존 메뉴 보존 및 복원**: 기존 Antigravity IDE 메뉴(`AntigravityIDE`)가 삭제되지 않고 유지되며, 누락 시 자동 복원되어 Antigravity 2.0 메뉴와 함께 나란히 공존한다.
 
 레지스트리 확인 (PowerShell):
 
@@ -791,7 +792,7 @@ Get-ItemProperty HKCU:\Software\Classes\Directory\shell\Antigravity2\command
 - [ ] Git/일반 폴더 분기가 있다.
 - [ ] 기존 프로젝트 중복 생성을 피한다.
 - [ ] HKCU `Directory` / `Directory\Background` / `Drive` 세 곳 모두 등록한다.
-- [ ] 기존 `AntigravityIDE` 레지스트리 키를 삭제하지 않고 보존한다.
+- [ ] 기존 `AntigravityIDE` 레지스트리 키를 보존하며, 누락 시 자동 복원하여 2.0과 함께 공존시킨다.
 - [ ] 폴더 최상위 EXE 더블클릭 = 즉시 설치(MessageBox).
 - [ ] 우클릭 실행 = 콘솔 없음, MessageBox 없음.
 - [ ] `dist\AntigravityOpen.exe`가 실제로 빌드된다.
